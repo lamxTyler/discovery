@@ -66,7 +66,6 @@ func handlePing(c *gin.Context) {
 }
 
 func InitMonitoring(svr *niuhe.Server, conf *Config, watchPaths []string) {
-	svr.Use(prometheus.PrometheusMiddlewareHandler())
 	options := prometheus.Options{
 		ServiceName: conf.ServiceName,
 		Idc:         conf.Idc,
@@ -80,6 +79,7 @@ func InitMonitoring(svr *niuhe.Server, conf *Config, watchPaths []string) {
 	}
 	prometheus.InitCommonMonitoring(options)
 
+	svr.Use(prometheus.PrometheusMiddlewareHandler())
 	svr.GetGinEngine().GET("/metrics", PromHandler(promhttp.Handler()))
 }
 
