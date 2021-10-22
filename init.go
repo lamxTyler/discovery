@@ -2,7 +2,6 @@ package discovery
 
 import (
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -11,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/lamxTyler/discovery/consul"
 	"github.com/lamxTyler/discovery/prometheus"
+	"github.com/lamxTyler/discovery/utils/host"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/ziipin-server/niuhe"
 )
@@ -20,29 +20,6 @@ func PromHandler(handler http.Handler) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		handler.ServeHTTP(c.Writer, c.Request)
 	}
-}
-
-func getInnerIp() string {
-	netInterfaces, err := net.Interfaces()
-	if err != nil {
-		niuhe.LogError("net.Interfaces failed, err:%v", err)
-		return ""
-	}
-
-	for i := 0; i < len(netInterfaces); i++ {
-		if (netInterfaces[i].Flags & net.FlagUp) != 0 {
-			addrs, _ := netInterfaces[i].Addrs()
-
-			for _, address := range addrs {
-				if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-					if ipnet.IP.To4() != nil && strings.HasPrefix(ipnet.IP.String(), "10.") {
-						return ipnet.IP.String()
-					}
-				}
-			}
-		}
-	}
-	return ""
 }
 
 func port(serverAddr string) int {
@@ -56,7 +33,7 @@ func port(serverAddr string) int {
 }
 
 func accessAddr(serverAddr string) string {
-	return fmt.Sprintf("http://%s:%d", getInnerIp(), port(serverAddr))
+	return fmt.Sprintf("http://%s:%d", host.GetInnerIp(), port(serverAddr))
 }
 
 func handlePing(c *gin.Context) {
@@ -65,34 +42,23 @@ func handlePing(c *gin.Context) {
 	})
 }
 
-func InitMonitoring(svr *niuhe.Server, conf *Config, watchPaths []string) {
-	options := prometheus.Options{
-		ServiceName: conf.ServiceName,
-		Idc:         conf.Idc,
-		WatchPath:   make(map[string]struct{}),
-		HistogramBuckets: []float64{
-			0.5, 1, 3, 5, 10, 15, 20, 30, 40, 50, 75, 100, 150, 200, 400, 700, 1000, 2000, 3000, 5000, 10000,
-		},
-	}
-	for _, watchPath := range watchPaths {
-		options.WatchPath[watchPath] = struct{}{}
-	}
-	prometheus.InitCommonMonitoring(options)
-
-	svr.Use(prometheus.PrometheusMiddlewareHandler())
+func InitMonitoring(svr *niuhe.Server, pushIntervalSec int, pushAddr, serviceName string, watchPaths []string) {
+	prometheus.InitMonitoring(svr, pushIntervalSec, pushAddr, serviceName, watchPaths)
 	svr.GetGinEngine().GET("/metrics", PromHandler(promhttp.Handler()))
 }
 
 type Config struct {
-	ServerAddr  string
-	ServiceName string
-	Zone        string
-	Idc         string
-	ConsulAddr  string
-	ConsulDc    string
-	ConsulNode  string
-	ConsulToken string
-	Debug       bool
+	PushIntervalSec int
+	PushAddr        string
+	ServerAddr      string
+	ServiceName     string
+	Zone            string
+	Idc             string
+	ConsulAddr      string
+	ConsulDc        string
+	ConsulNode      string
+	ConsulToken     string
+	Debug           bool
 }
 
 func setConsulEnvs(conf *Config) {
@@ -116,13 +82,13 @@ func setConsulEnvs(conf *Config) {
 func InitConsul(svr *niuhe.Server, conf *Config) {
 	setConsulEnvs(conf)
 	svr.GetGinEngine().GET("/ping", handlePing)
-	innerIP := getInnerIp()
+	innerIP := host.GetInnerIp()
 	if innerIP != "" {
 		consul.Register(conf.ServiceName, accessAddr(conf.ServerAddr)+"/ping", map[string]string{}, accessAddr(conf.ServerAddr))
 	}
 }
 
 func Init(svr *niuhe.Server, conf *Config, watchPaths []string) {
-	InitMonitoring(svr, conf, watchPaths)
+	InitMonitoring(svr, conf.PushIntervalSec, conf.PushAddr, conf.ServiceName, watchPaths)
 	InitConsul(svr, conf)
 }

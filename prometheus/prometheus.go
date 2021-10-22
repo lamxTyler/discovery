@@ -1,155 +1,176 @@
 package prometheus
 
 import (
+	"bytes"
+	"encoding/json"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/lamxTyler/discovery/utils/host"
 	"github.com/prometheus/client_golang/prometheus"
+	io_prometheus_client "github.com/prometheus/client_model/go"
+	"github.com/prometheus/common/expfmt"
 	"github.com/ziipin-server/niuhe"
 )
 
 // ** 通用Metrics start **
-// 目前通用部分主要覆盖niuhe自动注册的api
-const (
-	Module = "self"
-)
-
-type Options struct {
-	ServiceName      string
-	Idc              string
-	WatchPath        map[string]struct{}
-	HistogramBuckets []float64
+type promConfig struct {
+	serviceName string
+	host        string
+	watchPath   map[string]struct{}
+	counter     *prometheus.CounterVec
+	latency     *prometheus.HistogramVec
+	push        *prometheus.CounterVec
+	constLabels []*io_prometheus_client.LabelPair
 }
 
-type LatencyRecord struct {
-	Time   float64
-	Api    string
-	Module string
-	Method string
-	Code   int
+var config *promConfig
+
+func GetMonitorWrapper() *promConfig {
+	return config
 }
 
-type QpsRecord struct {
-	Times  float64
-	Api    string
-	Module string
-	Method string
-	Code   int
-}
-
-type Prometheus struct {
-	ServiceName string
-	Idc         string
-	WatchPath   map[string]struct{}
-	Counter     *prometheus.CounterVec
-	Histogram   *prometheus.HistogramVec
-}
-
-var Metrics *Prometheus
-
-func GetMonitorWrapper() *Prometheus {
-	return Metrics
-}
-
-func InitCommonMonitoring(options Options) {
-	if strings.TrimSpace(options.ServiceName) == "" || strings.TrimSpace(options.Idc) == "" || len(options.HistogramBuckets) == 0 {
-		panic(options.ServiceName + " or " + options.Idc + " or HistogramBuckets is empty !!!")
+func InitMonitoring(svr *niuhe.Server, pushIntervalSec int, pushAddr, serviceName string, watchPaths []string) {
+	if strings.TrimSpace(serviceName) == "" || strings.TrimSpace(pushAddr) == "" {
+		panic(serviceName + " or pushAddr is empty !!!")
+	}
+	buckets := []float64{
+		0.5, 1, 3, 5, 10, 15, 20, 30, 40, 50, 75, 100, 150, 200, 400, 700, 1000, 2000, 3000, 5000, 10000}
+	watchPathSet := make(map[string]struct{})
+	for _, watchPath := range watchPaths {
+		watchPathSet[watchPath] = struct{}{}
 	}
 
-	Metrics = &Prometheus{
-		ServiceName: options.ServiceName,
-		Idc:         options.Idc,
-		WatchPath:   options.WatchPath,
-		Counter: prometheus.NewCounterVec( // QPS and failure ratio
+	config = &promConfig{
+		serviceName: serviceName,
+		host:        host.GetHost(),
+		watchPath:   watchPathSet,
+		counter: prometheus.NewCounterVec( // QPS and failure ratio
 			prometheus.CounterOpts{
 				Name: "module_responses",
 				Help: "used to calculate qps and failure ratio",
 			},
-			[]string{"app", "module", "api", "method", "code", "idc"},
+			[]string{"api", "method", "code"},
 		),
-		Histogram: prometheus.NewHistogramVec( // P95/P99
+		latency: prometheus.NewHistogramVec( // P95/P99
 			prometheus.HistogramOpts{
 				Name:    "response_duration_milliseconds",
 				Help:    "HTTP latency distributions",
-				Buckets: options.HistogramBuckets,
+				Buckets: buckets,
 			},
-			[]string{"app", "module", "api", "method", "idc"},
+			[]string{"api", "method"},
+		),
+		push: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "prom_metric_push_total",
+				Help: "Total number of pushes.",
+			},
+			[]string{"state"},
 		),
 	}
+	labels := []string{"job", serviceName, "instance", config.host}
+	config.constLabels = []*io_prometheus_client.LabelPair{
+		{Name: &labels[0], Value: &labels[1]},
+		{Name: &labels[2], Value: &labels[3]},
+	}
+	prometheus.MustRegister(config.counter)
+	prometheus.MustRegister(config.latency)
+	prometheus.MustRegister(config.push)
+	go func() {
+		if pushIntervalSec <= 0 {
+			pushIntervalSec = 60
+		}
+		t := time.NewTicker(time.Duration(pushIntervalSec) * time.Second)
+		addr := strings.TrimSpace(pushAddr) + "/api/metrics/add/"
+		defer t.Stop()
+		for {
+			<-t.C
+			config.pushMetrics(addr)
+		}
+	}()
 
-	prometheus.MustRegister(Metrics.Counter)
-	prometheus.MustRegister(Metrics.Histogram)
+	svr.Use(prometheusMiddlewareHandler())
 }
 
-// QPS
-func (metrics *Prometheus) QpsCounterLog(record QpsRecord) {
-	if strings.TrimSpace(record.Module) == "" {
-		record.Module = Module
+func (pc *promConfig) LogQuery(api, method string, code int, dur time.Duration) {
+	pc.counter.WithLabelValues(
+		pc.serviceName,
+		api,
+		method,
+		strconv.Itoa(code),
+	).Add(1)
+
+	mSec := dur / time.Millisecond
+	nSec := dur % time.Millisecond
+	latency := float64(mSec) + float64(nSec)/1e6
+	pc.latency.WithLabelValues(
+		pc.serviceName,
+		api,
+		method,
+	).Observe(latency)
+}
+
+func (pc *promConfig) pushMetrics(pushAddr string) {
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		pc.push.WithLabelValues("gather-error").Inc()
+		niuhe.LogError("gather metrics failed: %s", err.Error())
+		return
+	}
+	buf := &bytes.Buffer{}
+	enc := expfmt.NewEncoder(buf, expfmt.FmtText)
+	now := time.Now()
+	timeStamp := now.Unix()*1000 + int64(now.Nanosecond()/1000000)
+	for _, mf := range mfs {
+		for _, m := range mf.Metric {
+			m.Label = append(m.Label, config.constLabels...)
+			m.TimestampMs = &timeStamp
+		}
+		err := enc.Encode(mf)
+		if err != nil {
+			pc.push.WithLabelValues("encode-error").Inc()
+			niuhe.LogError("encode metrics failed: %s", err.Error())
+			return
+		}
 	}
 
-	metrics.Counter.WithLabelValues(
-		metrics.ServiceName,
-		record.Module,
-		record.Api,
-		record.Method,
-		strconv.Itoa(record.Code),
-		metrics.Idc,
-	).Add(record.Times)
-}
-
-// P95/P99
-func (metrics *Prometheus) LatencyLog(record LatencyRecord) {
-	if strings.TrimSpace(record.Module) == "" {
-		record.Module = Module
+	values := map[string]string{
+		"service_name":  pc.serviceName,
+		"instance":      pc.host,
+		"metrics_datas": buf.String(),
 	}
-
-	metrics.Histogram.WithLabelValues(
-		metrics.ServiceName,
-		record.Module,
-		record.Api,
-		record.Method,
-		metrics.Idc,
-	).Observe(record.Time)
+	data, err := json.Marshal(values)
+	if err != nil {
+		pc.push.WithLabelValues("marshal-error").Inc()
+		niuhe.LogError("marshal json failed: %s", err.Error())
+		return
+	}
+	resp, err := http.Post(pushAddr, "application/json", bytes.NewBuffer(data))
+	if err != nil {
+		pc.push.WithLabelValues("push-error").Inc()
+		niuhe.LogError("push metrics failed: %s", err.Error())
+		return
+	}
+	resp.Body.Close()
+	pc.push.WithLabelValues("success").Inc()
 }
 
-func PrometheusMiddlewareHandler() gin.HandlerFunc {
+func prometheusMiddlewareHandler() gin.HandlerFunc {
 	return func(context *gin.Context) {
 		start := time.Now()
 		context.Next()
 
-		go func() {
-			if GetMonitorWrapper() != nil {
-				if _, ok := Metrics.WatchPath[context.Request.URL.Path]; ok {
-					// QPS
-					Metrics.QpsCounterLog(QpsRecord{
-						Times:  1,
-						Api:    context.Request.URL.Path,
-						Module: Module,
-						Method: context.Request.Method,
-						Code:   context.Writer.Status(),
-					})
-
-					// P95/P99
-					d := time.Since(start)
-					mSec := d / time.Millisecond
-					nSec := d % time.Millisecond
-					latency := float64(mSec) + float64(nSec)/1e6
-					Metrics.LatencyLog(LatencyRecord{
-						Time:   latency,
-						Api:    context.Request.URL.Path,
-						Module: Module,
-						Method: context.Request.Method,
-						Code:   context.Writer.Status(),
-					})
-
-					//niuhe.LogInfo("access logger => method %v, path %v, status %v, latency %v", context.Request.Method, context.Request.URL.Path, context.Writer.Status(), latency)
-				}
-			} else {
-				niuhe.LogWarn("need to init prometheus!!!")
-			}
-		}()
+		if config == nil {
+			return
+		}
+		if _, ok := config.watchPath[context.Request.URL.Path]; !ok {
+			return
+		}
+		d := time.Since(start)
+		config.LogQuery(context.Request.URL.Path, context.Request.Method, context.Writer.Status(), d)
 	}
 }
 
@@ -158,22 +179,6 @@ func PrometheusMiddlewareHandler() gin.HandlerFunc {
 // ** 自定义模块(不在niuhe里注册的那部分api)使用示例 start **
 // 延迟
 // latencyMS := endTime - startTime // your_api_lantency
-// prometheus.GetMonitorWrapper().LatencyLog(prometheus.LatencyRecord{
-//  Api:  "/api/account/inner_check_token/",
-// 	Module: "uc",
-// 	Method: "POST",
-//  me: latencyMS
-// })
-
-// QPS
-// prometheus.GetMonitorWrapper().QpsCountLog(prometheus.QPSRecord{
-//    Module: "uc",
-//    Times:  float64(1),
-//    Api:    "/api/account/inner_check_token/",
-//    Method: "POST",
-//    Code:   200, // your api's code
-// })
-
+// prometheus.GetMonitorWrapper().LogQuery("/api/account/inner_check_token/", "POST", 200, latencyMS)
 // ** 自定义模块 end **
-
 // **如有更多的需求，可以扩展
