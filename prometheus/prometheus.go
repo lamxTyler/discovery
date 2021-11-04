@@ -161,25 +161,58 @@ func (pc *promConfig) PushMetrics() {
 		}
 	}
 
+	err = DoPush(pc.pushAddr, pc.serviceName, pc.host, buf.String())
+	if err != nil {
+		pc.push.WithLabelValues("push failed").Inc()
+		niuhe.LogError("push failed: %s", err.Error())
+		return
+	}
+	pc.push.WithLabelValues("success").Inc()
+}
+
+func DoPush(pushAddr, serviceName, instance, metricsData string) error {
 	values := map[string]string{
-		"service_name":  pc.serviceName,
-		"instance":      pc.host,
-		"metrics_datas": buf.String(),
+		"service_name":  serviceName,
+		"instance":      instance,
+		"metrics_datas": metricsData,
 	}
 	data, err := json.Marshal(values)
 	if err != nil {
-		pc.push.WithLabelValues("marshal-error").Inc()
-		niuhe.LogError("marshal json failed: %s", err.Error())
-		return
+		return err
 	}
-	resp, err := http.Post(pc.pushAddr, "application/json", bytes.NewBuffer(data))
+	resp, err := http.Post(pushAddr, "application/json", bytes.NewBuffer(data))
 	if err != nil {
-		pc.push.WithLabelValues("push-error").Inc()
-		niuhe.LogError("push metrics failed: %s", err.Error())
-		return
+		return err
 	}
-	resp.Body.Close()
-	pc.push.WithLabelValues("success").Inc()
+	return resp.Body.Close()
+}
+
+func BuildLabelPairs(labels []string) []*io_prometheus_client.LabelPair {
+	pairs := make([]*io_prometheus_client.LabelPair, 0, len(labels)/2)
+	for i := 0; i < len(labels); i += 2 {
+		pairs = append(pairs, &io_prometheus_client.LabelPair{
+			Name:  &labels[i],
+			Value: &labels[i+1],
+		})
+	}
+	return pairs
+}
+
+func WriteGuageMetrics(encoder expfmt.Encoder, name string, labels []string, value float64, ts int64) error {
+	tp := io_prometheus_client.MetricType_GAUGE
+	mf := &io_prometheus_client.MetricFamily{
+		Name: &name,
+		Help: &name,
+		Type: &tp,
+		Metric: []*io_prometheus_client.Metric{
+			{
+				Label:       BuildLabelPairs(labels),
+				Gauge:       &io_prometheus_client.Gauge{Value: &value},
+				TimestampMs: &ts,
+			},
+		},
+	}
+	return encoder.Encode(mf)
 }
 
 func prometheusMiddlewareHandler() gin.HandlerFunc {
