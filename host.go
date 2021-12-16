@@ -1,4 +1,4 @@
-package host
+package guangmu_go
 
 import (
 	"net"
@@ -14,10 +14,10 @@ func GetHost() string {
 	if host != "" {
 		return host
 	}
-	return GetInnerIp()
+	return getInnerIp()
 }
 
-func GetInnerIp() string {
+func getInnerIp() string {
 	netInterfaces, err := net.Interfaces()
 	if err != nil {
 		niuhe.LogError("net.Interfaces failed, err:%v", err)

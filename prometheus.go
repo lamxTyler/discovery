@@ -1,4 +1,4 @@
-package prometheus
+package guangmu_go
 
 import (
 	"bytes"
@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/lamxTyler/discovery/utils/host"
 	"github.com/prometheus/client_golang/prometheus"
 	io_prometheus_client "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
@@ -37,6 +36,9 @@ func GetMonitorWrapper() *promConfig {
 	return defaultConfig
 }
 
+// 初始化监控
+// pushIntervalSec 推送监控数据间隔; pushAddr 推送地址； serviceName: 当前服务名;
+// watchAll 是否默认监控所有 api，True 的话可以不传 watchPath，否则将需要监控的 api 放入 watchPaths
 func InitMonitoring(svr *niuhe.Server, pushIntervalSec int, pushAddr, serviceName string, watchAll bool, watchPaths []string) {
 	if strings.TrimSpace(serviceName) == "" || strings.TrimSpace(pushAddr) == "" {
 		panic(serviceName + " or pushAddr is empty !!!")
@@ -50,7 +52,7 @@ func InitMonitoring(svr *niuhe.Server, pushIntervalSec int, pushAddr, serviceNam
 
 	defaultConfig = &promConfig{
 		serviceName: serviceName,
-		host:        host.GetHost(),
+		host:        GetHost(),
 		pushAddr:    strings.TrimSpace(pushAddr) + "/api/metrics/add/",
 		watchPath:   watchPathSet,
 		counter: prometheus.NewCounterVec( // QPS and failure ratio
