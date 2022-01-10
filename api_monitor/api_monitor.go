@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/lamxTyler/guangmu_go"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/ziipin-server/guangmu_go"
 	"github.com/ziipin-server/niuhe"
 )
 

@@ -1,4 +1,4 @@
-module github.com/lamxTyler/guangmu_go
+module github.com/ziipin-server/guangmu_go
 
 go 1.17
 
