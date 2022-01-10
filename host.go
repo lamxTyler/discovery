@@ -4,8 +4,6 @@ import (
 	"net"
 	"os"
 	"strings"
-
-	"github.com/ziipin-server/niuhe"
 )
 
 func GetHost() string {
@@ -20,7 +18,6 @@ func GetHost() string {
 func getInnerIp() string {
 	netInterfaces, err := net.Interfaces()
 	if err != nil {
-		niuhe.LogError("net.Interfaces failed, err:%v", err)
 		return ""
 	}
 
