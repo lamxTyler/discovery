@@ -17,7 +17,7 @@ type apiMonitor struct {
 	watchAll  bool
 }
 
-func MonitorAPI(pc guangmu_go.PromConfig, svr *niuhe.Server, watchAll bool, watchPaths []string) {
+func MonitorAPI(pc *guangmu_go.PromConfig, svr *niuhe.Server, watchAll bool, watchPaths []string) {
 	buckets := []float64{
 		0.5, 1, 3, 5, 10, 15, 20, 30, 40, 50, 75, 100, 150, 200, 400, 700, 1000, 2000, 3000, 5000, 10000}
 	watchPathSet := make(map[string]struct{})
