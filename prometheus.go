@@ -22,16 +22,16 @@ type PromConfig struct {
 	gather      prometheus.Gatherer
 }
 
-func NewCollecter(serviceName, host string, registry *prometheus.Registry) *PromConfig {
+func NewCollecter(serviceName string, reg prometheus.Registerer, gather prometheus.Gatherer) *PromConfig {
 	if strings.TrimSpace(serviceName) == "" {
 		panic(serviceName + " is empty")
 	}
 	config := &PromConfig{
 		serviceName: serviceName,
-		host:        host,
+		host:        GetHost(),
 		push:        prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"state"}),
-		register:    registry,
-		gather:      registry,
+		register:    reg,
+		gather:      gather,
 	}
 	config.register.MustRegister(config.push)
 	labels := []string{"job", serviceName, "instance", config.host}
