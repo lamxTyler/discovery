@@ -29,9 +29,12 @@ func NewCollecter(serviceName string, reg prometheus.Registerer, gather promethe
 	config := &PromConfig{
 		serviceName: serviceName,
 		host:        GetHost(),
-		push:        prometheus.NewCounterVec(prometheus.CounterOpts{}, []string{"state"}),
-		register:    reg,
-		gather:      gather,
+		push: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "prom_metric_push_total",
+			Help: "Total number of pushes.",
+		}, []string{"state"}),
+		register: reg,
+		gather:   gather,
 	}
 	config.register.MustRegister(config.push)
 	labels := []string{"job", serviceName, "instance", config.host}
